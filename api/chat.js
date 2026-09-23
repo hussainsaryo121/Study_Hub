@@ -1,9 +1,9 @@
 const ALLOWED_ORIGINS = new Set([
-  "https://study-hub-ebon.vercel.app",
-  "https://hussainsaryo121.github.io"
+  "https://hussainsaryo121.github.io",
+  "https://study-hub-ebon.vercel.app"
 ]);
 
-function setCors(req, res) {
+function cors(req, res) {
   const origin = req.headers.origin;
 
   if (ALLOWED_ORIGINS.has(origin)) {
@@ -15,132 +15,297 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-function sendJSON(req, res, status, data) {
-  setCors(req, res);
+function response(req, res, status, data) {
+  cors(req, res);
+
   res.status(status);
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Cache-Control", "no-store");
+
   return res.json(data);
 }
 
-function cleanText(value, max = 12000) {
-  if (typeof value !== "string") return "";
+function clean(value, max = 12000) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
   return value.trim().slice(0, max);
 }
 
+function getSources(output) {
+  const sources = [];
+  const used = new Set();
+
+  for (const item of output || []) {
+    if (item?.type !== "message") {
+      continue;
+    }
+
+    for (const content of item.content || []) {
+      for (const annotation of content.annotations || []) {
+        const citation =
+          annotation.url_citation || annotation;
+
+        const url = citation?.url;
+
+        if (!url || used.has(url)) {
+          continue;
+        }
+
+        used.add(url);
+
+        sources.push({
+          title: citation.title || url,
+          url: url
+        });
+      }
+    }
+  }
+
+  return sources.slice(0, 8);
+}
+
 export default async function handler(req, res) {
-  setCors(req, res);
+
+  cors(req, res);
 
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
 
   if (req.method !== "POST") {
-    return sendJSON(req, res, 405, {
+    return response(req, res, 405, {
+      success: false,
       error: "Use POST."
     });
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    return sendJSON(req, res, 500, {
-      error: "OPENAI_API_KEY is not configured."
+    return response(req, res, 500, {
+      success: false,
+      error:
+        "OPENAI_API_KEY is missing from Vercel Environment Variables."
     });
   }
 
   try {
-    const body = req.body || {};
-    const message = cleanText(body.message);
+
+    let body = req.body || {};
+
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        return response(req, res, 400, {
+          success: false,
+          error: "Invalid JSON body."
+        });
+      }
+    }
+
+    const message = clean(body.message);
 
     if (!message) {
-      return sendJSON(req, res, 400, {
+      return response(req, res, 400, {
+        success: false,
         error: "Message is required."
       });
     }
 
     const mode =
-      body.mode === "research" ? "research" :
-      body.mode === "quiz" ? "quiz" :
-      body.mode === "notes" ? "notes" :
-      "tutor";
+      body.mode === "research"
+        ? "research"
+        : body.mode === "quiz"
+        ? "quiz"
+        : body.mode === "notes"
+        ? "notes"
+        : "tutor";
+
+    const profile = body.profile || {};
+
+    const studentClass =
+      clean(profile.class, 50) || "Grade 9";
+
+    const board =
+      clean(profile.board, 80) || "AKU-EB";
+
+    const level =
+      clean(profile.level, 50) || "Student";
+
+    let modeInstruction = "";
+
+    if (mode === "tutor") {
+
+      modeInstruction = `
+Act as a personal AI Tutor.
+
+Explain the topic clearly.
+Start with simple language.
+Then give deeper understanding.
+For Mathematics and Science, show the method and working.
+Give examples when useful.
+`;
+
+    } else if (mode === "research") {
+
+      modeInstruction = `
+Act as an AI Research Tutor.
+
+Research the requested topic using current web information.
+Give a clear summary suitable for a Grade 9 student.
+Use reliable sources.
+Mention important sources at the end.
+Separate current information from general explanation.
+`;
+
+    } else if (mode === "quiz") {
+
+      modeInstruction = `
+Act as Test Me AI.
+
+Create questions about the requested topic.
+Mix:
+- Recall
+- Understanding
+- Application
+- Reasoning
+
+Do not immediately reveal the answers unless the student asks.
+`;
+
+    } else if (mode === "notes") {
+
+      modeInstruction = `
+Create clean revision notes.
+
+Use:
+- Definition
+- Key points
+- Examples
+- Formula where needed
+- Exam tip
+
+Keep the notes easy to revise.
+`;
+    }
 
     const instructions = `
-You are Study Hub AI Tutor.
+You are StudyHub AI.
 
-You help a Grade 9 school student.
+Student:
+Class: ${studentClass}
+Board: ${board}
+Level: ${level}
 
-Student profile:
-Class: ${cleanText(body.profile?.class, 50) || "Grade 9"}
-Board: ${cleanText(body.profile?.board, 50) || "AKU-EB"}
-Level: ${cleanText(body.profile?.level, 50) || "School"}
+${modeInstruction}
 
-Rules:
-- Explain in simple language first.
-- Give exam-level understanding when useful.
-- Use headings and bullet points.
-- Give examples when helpful.
-- For Mathematics and Science, show the method and working.
-- Focus on concepts, application, reasoning and exam preparation.
-- Keep answers appropriate for a school student.
-- Never invent facts or sources.
-- If web search is used, clearly distinguish current information.
+General rules:
 
-Current mode: ${mode}
+1. Use simple English.
+2. Match the student's level.
+3. Use headings and bullet points.
+4. Focus on understanding and examination preparation.
+5. Do not invent facts.
+6. For calculations, show working.
+7. For Science, explain concepts clearly.
+8. For English, explain grammar and writing clearly.
+9. Keep answers useful rather than unnecessarily long.
+10. The student is using StudyHub for school learning.
 `;
 
     const requestBody = {
       model: "gpt-5.6-luna",
-      instructions,
+
+      instructions: instructions,
+
       input: message,
+
       max_output_tokens: 1800
     };
 
-    if (mode === "research" || body.webSearch === true) {
+    if (mode === "research") {
+
       requestBody.tools = [
         {
           type: "web_search"
         }
       ];
+
+      requestBody.tool_choice = "required";
     }
 
-    const response = await fetch(
+    const apiResponse = await fetch(
       "https://api.openai.com/v1/responses",
       {
         method: "POST",
+
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+
+          "Authorization":
+            `Bearer ${process.env.OPENAI_API_KEY}`
         },
+
         body: JSON.stringify(requestBody)
       }
     );
 
-    const result = await response.json();
+    const result = await apiResponse.json();
 
-    if (!response.ok) {
-      console.error("OpenAI API error:", result);
+    if (!apiResponse.ok) {
 
-      return sendJSON(req, res, 500, {
+      console.error(
+        "OpenAI API error:",
+        result
+      );
+
+      return response(req, res, 502, {
         success: false,
-        error: "The AI service could not complete the request."
+
+        error:
+          result?.error?.message ||
+          `OpenAI API error: HTTP ${apiResponse.status}`
       });
     }
 
-    return sendJSON(req, res, 200, {
+    const answer =
+      result.output_text ||
+      "The AI did not return an answer.";
+
+    const sources =
+      mode === "research"
+        ? getSources(result.output)
+        : [];
+
+    return response(req, res, 200, {
+
       success: true,
-      answer:
-        result.output_text ||
-        "The AI returned no answer.",
-      mode,
+
+      answer: answer,
+
+      mode: mode,
+
       webSearchUsed:
-        mode === "research" || body.webSearch === true
+        mode === "research",
+
+      sources: sources
     });
 
   } catch (error) {
-    console.error("Server error:", error);
 
-    return sendJSON(req, res, 500, {
+    console.error(
+      "StudyHub server error:",
+      error
+    );
+
+    return response(req, res, 500, {
+
       success: false,
-      error: "The AI service could not complete the request."
+
+      error:
+        error?.message ||
+        "StudyHub AI could not connect to the AI service."
     });
   }
 }
