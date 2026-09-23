@@ -1,21 +1,26 @@
-import OpenAI from "openai";
+const ALLOWED_ORIGINS = new Set([
+  "https://study-hub-ebon.vercel.app",
+  "https://hussainsaryo121.github.io"
+]);
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+function setCors(req, res) {
+  const origin = req.headers.origin;
 
-const ALLOWED_ORIGIN =
-  process.env.ALLOWED_ORIGIN ||
-  "https://hussainsaryo121.github.io";
+  if (ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
 
-function sendJSON(res, status, data) {
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function sendJSON(req, res, status, data) {
+  setCors(req, res);
   res.status(status);
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.json(data);
+  return res.json(data);
 }
 
 function cleanText(value, max = 12000) {
@@ -24,22 +29,20 @@ function cleanText(value, max = 12000) {
 }
 
 export default async function handler(req, res) {
+  setCors(req, res);
+
   if (req.method === "OPTIONS") {
-    res.status(204);
-    res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    return res.end();
+    return res.status(204).end();
   }
 
   if (req.method !== "POST") {
-    return sendJSON(res, 405, {
+    return sendJSON(req, res, 405, {
       error: "Use POST."
     });
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    return sendJSON(res, 500, {
+    return sendJSON(req, res, 500, {
       error: "OPENAI_API_KEY is not configured."
     });
   }
@@ -49,7 +52,7 @@ export default async function handler(req, res) {
     const message = cleanText(body.message);
 
     if (!message) {
-      return sendJSON(res, 400, {
+      return sendJSON(req, res, 400, {
         error: "Message is required."
       });
     }
@@ -84,7 +87,7 @@ Rules:
 Current mode: ${mode}
 `;
 
-    const request = {
+    const requestBody = {
       model: "gpt-5.6-luna",
       instructions,
       input: message,
@@ -92,19 +95,40 @@ Current mode: ${mode}
     };
 
     if (mode === "research" || body.webSearch === true) {
-      request.tools = [
+      requestBody.tools = [
         {
           type: "web_search"
         }
       ];
     }
 
-    const response = await client.responses.create(request);
+    const response = await fetch(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+        },
+        body: JSON.stringify(requestBody)
+      }
+    );
 
-    return sendJSON(res, 200, {
+    const result = await response.json();
+
+    if (!response.ok) {
+      console.error("OpenAI API error:", result);
+
+      return sendJSON(req, res, 500, {
+        success: false,
+        error: "The AI service could not complete the request."
+      });
+    }
+
+    return sendJSON(req, res, 200, {
       success: true,
       answer:
-        response.output_text ||
+        result.output_text ||
         "The AI returned no answer.",
       mode,
       webSearchUsed:
@@ -112,9 +136,9 @@ Current mode: ${mode}
     });
 
   } catch (error) {
-    console.error(error);
+    console.error("Server error:", error);
 
-    return sendJSON(res, 500, {
+    return sendJSON(req, res, 500, {
       success: false,
       error: "The AI service could not complete the request."
     });
